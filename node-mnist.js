@@ -15,14 +15,14 @@ var testDataMnist = splitData.test;
 function experiment() {
     
     var model = new nn.MLP([{size: trainDataMnist.rows*trainDataMnist.cols},
-                         {size: 50,
+                         {size: 100,
                           activation: 'relu'},
                          {size: 35,
-                         activation: 'relu'},
+                          activation: 'relu'},
                          {size: 20,
-                         activation: 'relu'},
+                          activation: 'relu'},
                          {size: 10,
-                         activation: 'tanh'}],
+                          activation: 'tanh'}],
                          random);
     
     model.alpha = 0.01;

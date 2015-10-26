@@ -170,11 +170,15 @@ function matXvec(mat, vec, result, resultIndex) {
     resultIndex = resultIndex || 0;
     result = result || makeVector(mat.h, 0);
     var i;
-    for (i=0; i<mat.h; i++) {
-        result[i+resultIndex] = 0;
-        for (j=0; j<mat.w; j++) {
-            result[i+resultIndex] += vec[j] * mat.get(i, j);
+    var W = mat.w;
+    var H = mat.h;
+    for (i=0; i<H; i++) {
+        var base = W*i;
+        var acc = 0;
+        for (j=0; j<W; j++) {
+            acc += vec[j] * mat[base++];
         }
+        result[i+resultIndex] = acc;
     }
     return result;
 }
@@ -184,7 +188,8 @@ function mapVec(src, fun, result, resultIndex) {
     resultIndex = resultIndex || 0;
     result = result || makeVector(N, 0);
     var i;
-    for (i=resultIndex; i<N+resultIndex; i++) {
+    var stopIndex = N+resultIndex;
+    for (i=resultIndex; i<stopIndex; i++) {
         result[i] = fun(src[i]);
     }
 }
@@ -199,7 +204,8 @@ function mapVec2(srcA, srcB, fun, result, resultIndex) {
     resultIndex = resultIndex || 0;
     result = result || makeVector(N, 0);
     var i;
-    for (i=resultIndex; i<N+resultIndex; i++) {
+    var stopIndex = N+resultIndex;
+    for (i=resultIndex; i<stopIndex; i++) {
         result[i] = fun(srcA[i], srcB[i]);
     }
 }
@@ -443,10 +449,13 @@ function MLP(layers, random) {
         this.weights = [];
         this.biases = [];
     }
+    //this.wspeed = [];
+    //this.bspeed = [];
     this.temp = [];
     this.gradtemp = [];
     this.error = [];
     this.alpha = 0.01;
+    this.theta = 0.5;
     
     if (this.layers.length < 2) return;
     
@@ -456,7 +465,9 @@ function MLP(layers, random) {
         var w = this.layers[i].size, h = this.layers[i+1].size;
         if (!paramsInited) {
             this.weights.push(makeMatrix(w, h, this.layers[i].initw || initWeights(random)));
+            //this.wspeed.push(makeMatrix(w, h, 0));
             this.biases.push(makeVector(h, this.layers[i].initb || initWeights(random)));
+            //this.bspeed.push(makeVector(h, 0));
         }
         this.temp.push(makeVector(h));
         this.gradtemp.push(makeVector(h));
@@ -507,23 +518,44 @@ MLP.prototype.backward = function(invec, outvec) {
         var error = this.error[i];
         var prevError = this.error[i-1];
         var prevGrad = this.gradtemp[i-1];
-        for (k=0; k<weights.w; k++) {
+        
+        var W = weights.w;
+        var H = weights.h;
+        for (k=0; k<W; k++) {
             var acc = 0;
-            for (l=0; l<weights.h; l++) {
-                acc += error[l] * weights[weights.w*l+k];
+            for (l=0; l<H; l++) {
+                acc += error[l] * weights[W*l+k];
             }
             prevError[k] = prevGrad[k]*acc;
         }
+        /*
+        for (k=0; k<W; k++) {
+            prevError[k] = 0;
+        }
+        for (l=0; l<H; l++) {
+            var err = error[l];
+            var index = W*l;
+            for (k=0; k<W; k++) {
+                prevError[k] += err * weights[index++];
+            }
+        }
+        for (k=0; k<W; k++) {
+            prevError[k] *= prevGrad[k];
+        }
+        */
     }
 };
 
 MLP.prototype.update = function(example) {
     var alpha = this.alpha;
+    var theta = this.theta;
     var i,l;
     
     for (i=this.weights.length-1; i>=0; i--) {
         var weights = this.weights[i];
         var biases = this.biases[i];
+        //var wspeed = this.wspeed[i];
+        //var bspeed = this.bspeed[i];
         var gradtemp = this.gradtemp[i];
         var error = this.error[i];
         
@@ -531,15 +563,25 @@ MLP.prototype.update = function(example) {
         if (i == 0) { input = example }
         else { input = this.temp[i-1] }
         
-        for (l=0; l<weights.h; l++) {
-            var base = l*weights.w;
+        var W = weights.w;
+        var H = weights.h;
+        
+        for (l=0; l<H; l++) {
+            var base = l*W;
             var err = error[l];
             var egrad = err * alpha;
-            for (k=0; k<weights.w; k++) {
-                weights[base+k] += egrad * input[k];
+            var stop = base+W;
+            
+            for (k=0; k<W; k++) {
+                var index = base+k;
+                //wspeed[index] = theta * wspeed[index] - egrad * input[k];
+                //weights[index] += wspeed[index];
+                weights[index] += egrad * input[k]
             }
+            //bspeed[l] += theta * bspeed[l] + egrad;
+            //biases[l] += bspeed[l];
             biases[l] += egrad;
-        }        
+        }
     }
 };
 
