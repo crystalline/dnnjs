@@ -439,23 +439,32 @@ function testSigmoids() {
     return report;
 }
 
-function MLP(layers, random) {
+function MLP(config) {
+    var layers = config.layers;
+    var random = config.random;
+    var opt = config.optimizer || 'sgd';
+    
+    this.momentum = opt == 'momentum';
+        
     var paramsInited = false;
-    if (typeof layers == 'string') {
-        this.loadParams(layers);
+    if (typeof config == 'string') {
+        this.loadParams(config);
         paramsInited = true;
     } else {
         this.layers = layers;
         this.weights = [];
         this.biases = [];
     }
-    //this.wspeed = [];
-    //this.bspeed = [];
+    if (this.momentum) {
+        this.wspeed = [];
+        this.bspeed = [];
+    }
     this.temp = [];
     this.gradtemp = [];
     this.error = [];
-    this.alpha = 0.01;
-    this.theta = 0.5;
+    this.alpha = this.alpha || config.alpha || 0.01;
+    this.theta = this.theta || config.theta || 0.5;
+    this.setName();
     
     if (this.layers.length < 2) return;
     
@@ -465,9 +474,11 @@ function MLP(layers, random) {
         var w = this.layers[i].size, h = this.layers[i+1].size;
         if (!paramsInited) {
             this.weights.push(makeMatrix(w, h, this.layers[i].initw || initWeights(random)));
-            //this.wspeed.push(makeMatrix(w, h, 0));
             this.biases.push(makeVector(h, this.layers[i].initb || initWeights(random)));
-            //this.bspeed.push(makeVector(h, 0));
+        }
+        if (this.momentum) {
+            this.wspeed.push(makeMatrix(w, h, 0));
+            this.bspeed.push(makeVector(h, 0));
         }
         this.temp.push(makeVector(h));
         this.gradtemp.push(makeVector(h));
@@ -554,8 +565,10 @@ MLP.prototype.update = function(example) {
     for (i=this.weights.length-1; i>=0; i--) {
         var weights = this.weights[i];
         var biases = this.biases[i];
-        //var wspeed = this.wspeed[i];
-        //var bspeed = this.bspeed[i];
+        if (this.momentum) {
+            var wspeed = this.wspeed[i];
+            var bspeed = this.bspeed[i];
+        }
         var gradtemp = this.gradtemp[i];
         var error = this.error[i];
         
@@ -566,21 +579,34 @@ MLP.prototype.update = function(example) {
         var W = weights.w;
         var H = weights.h;
         
-        for (l=0; l<H; l++) {
-            var base = l*W;
-            var err = error[l];
-            var egrad = err * alpha;
-            var stop = base+W;
-            
-            for (k=0; k<W; k++) {
-                var index = base+k;
-                //wspeed[index] = theta * wspeed[index] - egrad * input[k];
-                //weights[index] += wspeed[index];
-                weights[index] += egrad * input[k]
+        if (this.momentum) {
+            for (l=0; l<H; l++) {
+                var base = l*W;
+                var err = error[l];
+                var egrad = err * alpha;
+                var stop = base+W;
+                
+                for (k=0; k<W; k++) {
+                    var index = base+k;
+                    wspeed[index] = theta * wspeed[index] + egrad * input[k];
+                    weights[index] += wspeed[index];
+                }
+                bspeed[l] = theta * bspeed[l] + egrad;
+                biases[l] += bspeed[l];
             }
-            //bspeed[l] += theta * bspeed[l] + egrad;
-            //biases[l] += bspeed[l];
-            biases[l] += egrad;
+        } else {
+            for (l=0; l<H; l++) {
+                var base = l*W;
+                var err = error[l];
+                var egrad = err * alpha;
+                var stop = base+W;
+                
+                for (k=0; k<W; k++) {
+                    var index = base+k;
+                    weights[index] += egrad * input[k]
+                }
+                biases[l] += egrad;
+            }
         }
     }
 };
@@ -589,6 +615,10 @@ MLP.prototype.train = function(example, correctOutput) {
     this.forward(example);
     this.backward(example, correctOutput);
     this.update(example);
+};
+
+MLP.prototype.gradtest = function() {
+    var i;
 };
 
 MLP.prototype.gradcheck = function(example, correctOutput, paramAddr) {
@@ -624,7 +654,9 @@ MLP.prototype.saveParams = function(extraParams) {
         biases: this.biases.map(function(b) {
             return copyVector(b,{});
         }),
-        alpha: this.alpha
+        alpha: this.alpha,
+        momentum: this.momentum,
+        name: this.name
     }
     extraParams = extraParams || {};
     util.simpleExtend(params, extraParams);
@@ -639,13 +671,14 @@ MLP.prototype.loadParams = function(jsonParams) {
     this.biases = params.biases.map(loadVecMat);
 };
 
-MLP.prototype.getName = function() {
-    if (this.name) { return this.name };
-    var res = ''
-    this.layers.forEach(function(layer) {
-        res += layer.size+'_';
-    });
-    return res;
+MLP.prototype.setName = function() {
+    if (!this.name) {
+        var res = ''
+        this.layers.forEach(function(layer) {
+            res += layer.size+'_';
+        });
+        this.name = res+Date.now();
+    }
 }
 
 MLP.prototype.visualize = function() {
@@ -757,7 +790,7 @@ function measureErrorOnDataset(dataset, classifier) {
 function trainClassifier(config) {
     var data = config.trainData;
     var model = config.model;
-    console.log('Starting training of model '+(model.getName && model.getName()));
+    console.log('Starting training of model '+(model.name));
     var numClasses = config.numClasses;
     var numEpochs = config.numEpochs;
     var labelTrue = config.labelTrue || 1;
@@ -767,7 +800,7 @@ function trainClassifier(config) {
     //console.log('Data: ',data);
     if (config.saveParams === true) {
         var models = __dirname + '/models/';
-        var modelDir = models + (model.name || (model.getName()+Date.now()));
+        var modelDir = models + (model.name);
         if (!fs.existsSync(models)) { fs.mkdirSync(models); }
         if (!fs.existsSync(modelDir)) { fs.mkdirSync(modelDir); }
         config.saveParams = function(params, epoch) {
@@ -783,9 +816,6 @@ function trainClassifier(config) {
     var bestModelParams = false;
     if (model.epoch) { j=model.epoch + 1 } else { j=0 }
     for (; j<numEpochs; j++) {
-        if (config.alphaDecay) {
-            model.alpha *= 0.95;
-        }
         console.log("Epoch ",j);
         var t1 = Date.now();
         for (i=0; i<data.num; i++) {
@@ -799,11 +829,15 @@ function trainClassifier(config) {
         var t2 = (Date.now()-t1)/1000;
         var erate = measureErrorOnDataset(config.testData, classifier).errorRate;
         console.log('Error rate:', erate, '\nepoch time:', t2, 'sec', '\nt per example:', t2/data.num, 'sec');
+        if (typeof config.alphaDecay == 'number') {
+            model.alpha *= config.alphaDecay;
+        }
         if (erate < minError && model.saveParams) {
             bestModelParams = model.saveParams({epoch: j, errorRate: erate});
             if (typeof config.saveParams == 'function') try {
                 config.saveParams(bestModelParams, j);
             } catch (e) { console.log('saveException', e) }
+            minError = erate;
         }
     }
     try{

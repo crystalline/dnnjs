@@ -14,27 +14,50 @@ var testDataMnist = splitData.test;
 
 function experiment() {
     
-    var model = new nn.MLP([{size: trainDataMnist.rows*trainDataMnist.cols},
-                         {size: 100,
-                          activation: 'relu'},
-                         {size: 35,
-                          activation: 'relu'},
-                         {size: 20,
-                          activation: 'relu'},
-                         {size: 10,
-                          activation: 'tanh'}],
-                         random);
+    if (process.argv.length == 2) {
+        
+        var model = new nn.MLP({
+            layers: [{size: trainDataMnist.rows*trainDataMnist.cols},
+                     {size: 1000,
+                      activation: 'relu'},
+    //               {size: 35,
+    //                activation: 'relu'},
+                     {size: 300,
+                     activation: 'relu'},
+                     {size: 10,
+                     activation: 'tanh'}],
+            optimizer: 'momentum',
+            alpha: 0.0005,
+            theta: 0.7,
+            random: random
+        });
+    } else {
+        
+        var model = new nn.MLP(fs.readFileSync(process.argv[2], 'ascii'));
+        
+        if (process.argv[3]) {
+            var res = {};
+            try {
+                res = eval('('+process.argv[3]+')');
+            } catch (e) { console.log(e) }
+            util.simpleExtend(model, res);
+        }
+    }
     
-    model.alpha = 0.01;
+    var N = (model.epoch||0)+500;    
+        
+    console.log('alpha: ', model.alpha);
+    console.log('start ep', (model.epoch||0), 'end ep', N);
+
     return nn.trainClassifier({
         model: model,
         trainData: trainDataMnist,
         testData: testDataMnist,
         numClasses: 10,
-        numEpochs: 100,
+        numEpochs: N,
         labelTrue: 1,
         labelFalse: -1,
-        alphaDecay: 0.92,
+        alphaDecay: 0.95,
         saveParams: true,
         random: random
     });
