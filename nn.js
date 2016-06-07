@@ -315,11 +315,40 @@ function normal() {
     return sum;
 }
 
+function NaNtoNum(x) {
+    var maxf = 10e9
+    if (x === +Infinity) return maxf;
+    if (x === -Infinity) return -maxf;
+    if (isNaN(x)) return 0;
+    return x;
+}
+
 function softmax(src, dst) {
     var i;
     var sumexp = 0;
-    for (i=0; i<vec.length; i++) { sumexp += Math.exp(vec[i]); }
-    for (i=0; i<vec.length; i++) { dst[i] = Math.exp(vec[i])/sumexp; }
+    for (i=0; i<src.length; i++) { sumexp += Math.exp(src[i]); }
+    for (i=0; i<src.length; i++) { dst[i] = NaNtoNum(Math.exp(src[i])/sumexp); }
+    return dst;
+}
+
+function softmaxGrad(src, dst) {
+    var i;
+
+    for (i=0; i<src.length; i++) { sumexp += Math.exp(src[i]); }
+}
+
+function crossEnthropyLoss(src, target) {
+    var acc = 0;
+    var i;
+    var ln = Math.log;
+    for (i=0; i<src.length; i++) {
+        acc += NaNtoNum(-target[i]*ln(src[i])-(1.0-target[i])*ln(1.0-src[i]));
+    }
+    return acc;
+}
+
+function crossEnthropyGrad(src, target, dst) {
+    subVec(target, src, dst);
     return dst;
 }
 
@@ -445,9 +474,10 @@ function MLP(config) {
     var opt = config.optimizer || 'sgd';
     
     this.momentum = opt == 'momentum';
-        
+    this.batchSize = config.batchSize;
+    
     var paramsInited = false;
-    if (typeof config == 'string') {
+    if (config.deserialize) {
         this.loadParams(config);
         paramsInited = true;
     } else {
@@ -458,6 +488,10 @@ function MLP(config) {
     if (this.momentum) {
         this.wspeed = [];
         this.bspeed = [];
+    }
+    if (this.batchSize) {
+        this.weightAcc = [];
+        this.biasAcc = [];
     }
     this.temp = [];
     this.gradtemp = [];
@@ -479,6 +513,10 @@ function MLP(config) {
         if (this.momentum) {
             this.wspeed.push(makeMatrix(w, h, 0));
             this.bspeed.push(makeVector(h, 0));
+        }
+        if (this.batchSize) {
+            this.weightAcc.push(makeMatrix(w, h, 0));
+            this.biasAcc.push(makeVector(h, 0));
         }
         this.temp.push(makeVector(h));
         this.gradtemp.push(makeVector(h));
@@ -557,6 +595,85 @@ MLP.prototype.backward = function(invec, outvec) {
     }
 };
 
+MLP.prototype.backwardAccBatch = function(invec, outvec) {
+    
+    var untrainedOutVec = this.temp[this.temp.length-1];
+    var i,k,l;
+    var alpha = this.alpha;
+    
+    var outError = this.error[this.error.length-1];
+    var outGrad = this.gradtemp[this.gradtemp.length-1];
+    
+    subVec(outvec, untrainedOutVec, outError, 0);
+    
+    for (k=0; k<outError.length; k++) {
+        outError[k] *= outGrad[k];
+    }
+            
+    for (i=this.weights.length-1; i>0; i--) {
+        var weights = this.weights[i];
+        var error = this.error[i];
+        var prevError = this.error[i-1];
+        var prevGrad = this.gradtemp[i-1];
+        var weightAcc = this.weightAcc[i];
+        var biasAcc = this.biasAcc[i];
+        
+        var W = weights.w;
+        var H = weights.h;
+        for (k=0; k<W; k++) {
+            var acc = 0;
+            for (l=0; l<H; l++) {
+                acc += error[l] * weights[W*l+k];
+            }
+            prevError[k] = prevGrad[k]*acc;
+        }
+        for (l=0; l<H; l++) {
+            var base = l*W;
+            var err = error[l];
+            var egrad = err * alpha;
+            var stop = base+W;
+            
+            for (k=0; k<W; k++) {
+                var index = base+k;
+                weightAcc[index] += egrad * input[k]
+            }
+            biasAcc[l] += egrad;
+        }
+    }
+};
+
+MLP.prototype.accumBatch = function(example) {
+    var alpha = this.alpha;
+    var i,l;
+    
+    for (i=this.weights.length-1; i>=0; i--) {
+        var weightAcc = this.weightAcc[i];
+        var biasAcc = this.biasAcc[i];
+        var gradtemp = this.gradtemp[i];
+        var error = this.error[i];
+        
+        var input;
+        if (i == 0) { input = example }
+        else { input = this.temp[i-1] }
+        
+        var W = weightAcc.w;
+        var H = weightAcc.h;
+
+        for (l=0; l<H; l++) {
+            var base = l*W;
+            var err = error[l];
+            var egrad = err * alpha;
+            var stop = base+W;
+            
+            for (k=0; k<W; k++) {
+                var index = base+k;
+                weightAcc[index] += egrad * input[k]
+            }
+            biasAcc[l] += egrad;
+        }
+    }
+};
+
 MLP.prototype.update = function(example) {
     var alpha = this.alpha;
     var theta = this.theta;
@@ -579,33 +696,71 @@ MLP.prototype.update = function(example) {
         var W = weights.w;
         var H = weights.h;
         
-        if (this.momentum) {
-            for (l=0; l<H; l++) {
-                var base = l*W;
-                var err = error[l];
-                var egrad = err * alpha;
-                var stop = base+W;
-                
-                for (k=0; k<W; k++) {
-                    var index = base+k;
-                    wspeed[index] = theta * wspeed[index] + egrad * input[k];
-                    weights[index] += wspeed[index];
+        if (this.batchSize && this.batchSize > 1) {
+            var weightAcc = this.weightAcc[i];
+            var biasAcc = this.biasAcc[i];
+            if (this.momentum) {
+                for (l=0; l<H; l++) {
+                    var base = l*W;
+                    var err = error[l];
+                    var egrad = err * alpha;
+                    var stop = base+W;
+                    
+                    for (k=0; k<W; k++) {
+                        var index = base+k;
+                        wspeed[index] = theta * wspeed[index] + weightAcc[index];
+                        weightAcc[index] = 0;
+                        weights[index] += wspeed[index];
+                    }
+                    bspeed[l] = theta * bspeed[l] + biasAcc[l];
+                    biasAcc[l] = 0;
+                    biases[l] += bspeed[l];
                 }
-                bspeed[l] = theta * bspeed[l] + egrad;
-                biases[l] += bspeed[l];
+            } else {
+                for (l=0; l<H; l++) {
+                    var base = l*W;
+                    var err = error[l];
+                    var egrad = err * alpha;
+                    var stop = base+W;
+                    
+                    for (k=0; k<W; k++) {
+                        var index = base+k;
+                        weights[index] += weightAcc[index];
+                        weightAcc[index] = 0;
+                    }
+                    biases[l] += biasAcc[l];
+                    biasAcc[l] = 0;
+                }
             }
         } else {
-            for (l=0; l<H; l++) {
-                var base = l*W;
-                var err = error[l];
-                var egrad = err * alpha;
-                var stop = base+W;
-                
-                for (k=0; k<W; k++) {
-                    var index = base+k;
-                    weights[index] += egrad * input[k]
+            if (this.momentum) {
+                for (l=0; l<H; l++) {
+                    var base = l*W;
+                    var err = error[l];
+                    var egrad = err * alpha;
+                    var stop = base+W;
+                    
+                    for (k=0; k<W; k++) {
+                        var index = base+k;
+                        wspeed[index] = theta * wspeed[index] + egrad * input[k];
+                        weights[index] += wspeed[index];
+                    }
+                    bspeed[l] = theta * bspeed[l] + egrad;
+                    biases[l] += bspeed[l];
                 }
-                biases[l] += egrad;
+            } else {
+                for (l=0; l<H; l++) {
+                    var base = l*W;
+                    var err = error[l];
+                    var egrad = err * alpha;
+                    var stop = base+W;
+                    
+                    for (k=0; k<W; k++) {
+                        var index = base+k;
+                        weights[index] += egrad * input[k]
+                    }
+                    biases[l] += egrad;
+                }
             }
         }
     }
@@ -615,6 +770,19 @@ MLP.prototype.train = function(example, correctOutput) {
     this.forward(example);
     this.backward(example, correctOutput);
     this.update(example);
+};
+
+MLP.prototype.trainBatch = function(examples, correctOutputs) {
+    if (examples.length) {
+        this.batchSize = examples.length;
+        var i = 0;
+        for (i=0; i<examples.length; i++) {
+            this.forward(examples[i]);
+            this.backward(examples[i], correctOutputs[i]);
+            this.accumBatch(examples[i]);
+        }
+        this.update();
+    }
 };
 
 MLP.prototype.gradtest = function() {
@@ -656,15 +824,15 @@ MLP.prototype.saveParams = function(extraParams) {
         }),
         alpha: this.alpha,
         momentum: this.momentum,
-        name: this.name
+        name: this.name,
+        batchSize: this.name
     }
     extraParams = extraParams || {};
     util.simpleExtend(params, extraParams);
     return JSON.stringify(params);
 };
 
-MLP.prototype.loadParams = function(jsonParams) {
-    var params = JSON.parse(jsonParams);
+MLP.prototype.loadParams = function(params) {
     util.simpleExtend(this, params);
     this.layers = params.layers;
     this.weights = params.weights.map(loadVecMat);
@@ -818,13 +986,31 @@ function trainClassifier(config) {
     for (; j<numEpochs; j++) {
         console.log("Epoch ",j);
         var t1 = Date.now();
-        for (i=0; i<data.num; i++) {
-            var index = Math.floor(random()*data.num);
-            var img = data.images[index];
-            var label = data.labels[index];
-            trainer.zero(labelFalse);
-            trainer[label] = labelTrue;
-            model.train(img, trainer);
+        var nIter = data.num;
+        if (model.batchSize && model.batchSize > 1) nIter = Math.ceil(nIter / model.batchSize);
+        for (i=0; i<nIter; i++) {
+            if (model.batchSize && model.batchSize > 1) {
+                var k;
+                var examples = new Array(model.batchSize); outputs = new Array(model.batchSize);
+                for (k=0; k<model.batchSize; k++) {
+                    var index = Math.floor(random()*data.num);
+                    var img = data.images[index];
+                    var label = data.labels[index];
+                    var trainer = makeVector(numClasses, 0);
+                    trainer.zero(labelFalse);
+                    trainer[label] = labelTrue;
+                    examples[k] = img;
+                    outputs[k] = trainer;
+                }
+                model.trainBatch(examples, outputs);
+            } else {
+                var index = Math.floor(random()*data.num);
+                var img = data.images[index];
+                var label = data.labels[index];
+                trainer.zero(labelFalse);
+                trainer[label] = labelTrue;
+                model.train(img, trainer);
+            }
         }
         var t2 = (Date.now()-t1)/1000;
         var erate = measureErrorOnDataset(config.testData, classifier).errorRate;

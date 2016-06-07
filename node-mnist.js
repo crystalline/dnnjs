@@ -18,30 +18,31 @@ function experiment() {
         
         var model = new nn.MLP({
             layers: [{size: trainDataMnist.rows*trainDataMnist.cols},
-                     {size: 1000,
+                     {size: 100,
                       activation: 'relu'},
-    //               {size: 35,
-    //                activation: 'relu'},
-                     {size: 300,
+                     {size: 100,
                      activation: 'relu'},
                      {size: 10,
                      activation: 'tanh'}],
             optimizer: 'momentum',
             alpha: 0.0005,
             theta: 0.7,
+            batchSize: 8,
             random: random
         });
     } else {
         
-        var model = new nn.MLP(fs.readFileSync(process.argv[2], 'ascii'));
+        var params = JSON.parse(fs.readFileSync(process.argv[2], 'ascii'));
         
         if (process.argv[3]) {
             var res = {};
             try {
                 res = eval('('+process.argv[3]+')');
             } catch (e) { console.log(e) }
-            util.simpleExtend(model, res);
+            util.simpleExtend(params, res);            
         }
+        
+        var model = new nn.MLP(params);
     }
     
     var N = (model.epoch||0)+500;    
